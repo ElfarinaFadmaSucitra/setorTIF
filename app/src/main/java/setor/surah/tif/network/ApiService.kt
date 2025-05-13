@@ -27,13 +27,6 @@ interface ApiService {
         @Field("refresh_token") refreshToken: String
     ): Response<Auth>
 
-    //Endpoint setoran-saya dengan parameter apikey
-    @GET("mahasiswa/setoran-saya")  //hapus
-    suspend fun getSetoranSaya(
-        @Header("Authorization") token: String,
-        @Query("apikey") accessToken: String
-    ): Response<SetoranResponse>
-
     // Endpoint setoran-saya tanpa parameter apikey
     @GET("mahasiswa/setoran-saya")
     suspend fun getSetoranSaya(

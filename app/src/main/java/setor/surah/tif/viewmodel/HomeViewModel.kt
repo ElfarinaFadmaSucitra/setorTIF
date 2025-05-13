@@ -1,6 +1,5 @@
 package setor.surah.tif.viewmodel
 
-import setor.surah.tif.network.Token
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -13,7 +12,7 @@ import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import setor.surah.tif.model.SetoranResponse
 import setor.surah.tif.network.RetrofitInstance
-
+import setor.surah.tif.network.Token
 
 class HomeViewModel(private val tokenManager: Token) : ViewModel() {
 
@@ -21,20 +20,25 @@ class HomeViewModel(private val tokenManager: Token) : ViewModel() {
     val dashboardState: StateFlow<DashboardState> = _dashboardState
     private val _userName = MutableStateFlow<String?>(null)
     val userName: StateFlow<String?> = _userName
-    private val TAG = "DashboardViewModel"
+    private val TAG = "HomeViewModel"
 
     init {
-        // Menguraikan id_token untuk mendapatkan nama pengguna
         val idToken = tokenManager.getIdToken()
         if (idToken != null) {
             try {
                 val decodedJwt = JWT(idToken)
-                val name = decodedJwt.getClaim("name").asString() ?: decodedJwt.getClaim("preferred_username").asString()
+                val name = decodedJwt.getClaim("name").asString()
+                    ?: decodedJwt.getClaim("preferred_username").asString()
+                    ?: "Tidak Diketahui"
                 _userName.value = name
                 Log.d(TAG, "Nama pengguna dari id_token: $name")
             } catch (e: Exception) {
-                Log.e(TAG, "Gagal menguraikan id_token: ${e.message}")
+                Log.e(TAG, "Gagal memparsing id_token: ${e.message}")
+                _userName.value = "Tidak Diketahui"
             }
+        } else {
+            Log.w(TAG, "id_token tidak ditemukan")
+            _userName.value = "Tidak Diketahui"
         }
     }
 
@@ -43,51 +47,26 @@ class HomeViewModel(private val tokenManager: Token) : ViewModel() {
             _dashboardState.value = DashboardState.Loading
             try {
                 val token = tokenManager.getAccessToken()
-                if (token != null) {
-                    // Coba tanpa apikey dulu
-                    Log.d(TAG, "data setoran dengan apikey, token: $token")
-                    Log.d(TAG, "URL: https://api.tif.uin-suska.ac.id/setoran-dev/v1//v1/mahasiswa/setoran-saya?apikey=$token")
-                    val response = RetrofitInstance.apiService.getSetoranSaya(
-                        token = "Bearer $token",
-                        accessToken = token
-                    )
-                    if (response.isSuccessful) {
-                        response.body()?.let { setoran ->
-                            Log.d(TAG, "Data setoran berhasil diambil: ${setoran.message}")
-                            _dashboardState.value = DashboardState.Success(setoran)
-                        } ?: run {
-                            Log.e(TAG, "Respons kosong dari server")
-                            _dashboardState.value = DashboardState.Error("Respons kosong dari server")
-                        }
-                    } else {
-                        val errorBody = response.errorBody()?.string()
-                        Log.e(TAG, "Gagal dengan apikey, kode: ${response.code()}, pesan: ${response.message()}, body: $errorBody")
-                        if (response.code() == 403) {
-                            // Coba tanpa apikey
-                            Log.d(TAG, "Mencoba tanpa apikey, https://api.tif.uin-suska.ac.id/setoran-dev//v1/mahasiswa/setoran-saya")
-                            val noApiKeyResponse = RetrofitInstance.apiService.getSetoranSaya(
-                                token = "Bearer $token"
-                            )
-                            if (noApiKeyResponse.isSuccessful) {
-                                noApiKeyResponse.body()?.let { setoran ->
-                                    Log.d(TAG, "Data setoran berhasil diambil tanpa apikey: ${setoran.message}")
-                                    _dashboardState.value = DashboardState.Success(setoran)
-                                } ?: run {
-                                    Log.e(TAG, "Respons kosong dari server tanpa apikey")
-                                    _dashboardState.value = DashboardState.Error("Respons kosong dari server tanpa apikey")
-                                }
-                            } else {
-                                val noApiKeyErrorBody = noApiKeyResponse.errorBody()?.string()
-                                Log.e(TAG, "Gagal tanpa apikey, kode: ${noApiKeyResponse.code()}, pesan: ${noApiKeyResponse.message()}, body: $noApiKeyErrorBody")
-                                handleErrorResponse(noApiKeyResponse.code(), noApiKeyErrorBody, noApiKeyResponse.message())
-                            }
-                        } else {
-                            handleErrorResponse(response.code(), errorBody, response.message())
-                        }
+                if (token == null) {
+                    Log.e(TAG, "Access token tidak ditemukan")
+                    _dashboardState.value = DashboardState.Error("Otentikasi diperlukan")
+                    return@launch
+                }
+
+                val response = RetrofitInstance.apiService.getSetoranSaya(
+                    token = "Bearer $token"
+                )
+
+                if (response.isSuccessful) {
+                    response.body()?.let { setoran ->
+                        Log.d(TAG, "Data setoran berhasil diambil: ${setoran.message}")
+                        _dashboardState.value = DashboardState.Success(setoran)
+                    } ?: run {
+                        Log.e(TAG, "Respons kosong dari server")
+                        _dashboardState.value = DashboardState.Error("Respons kosong dari server")
                     }
                 } else {
-                    Log.e(TAG, "Access token tidak ditemukan")
-                    _dashboardState.value = DashboardState.Error("Token tidak ditemukan")
+                    handleErrorResponse(response.code(), response.errorBody()?.string(), response.message())
                 }
             } catch (e: HttpException) {
                 Log.e(TAG, "Pengecualian HTTP: ${e.code()}, pesan: ${e.message()}")
@@ -103,60 +82,80 @@ class HomeViewModel(private val tokenManager: Token) : ViewModel() {
         when (code) {
             401 -> {
                 Log.w(TAG, "Token tidak valid, mencoba refresh token")
-                viewModelScope.launch {
-                    val refreshToken = tokenManager.getRefreshToken()
-                    if (refreshToken != null) {
-                        val refreshResponse = RetrofitInstance.kcApiService.refreshToken(
-                            clientId = "setoran-mobile-dev",
-                            clientSecret = "aqJp3xnXKudgC7RMOshEQP7ZoVKWzoSl",
-                            grantType = "refresh_token",
-                            refreshToken = refreshToken
-                        )
-                        if (refreshResponse.isSuccessful) {
-                            refreshResponse.body()?.let { auth ->
-                                Log.d(TAG, "Token berhasil diperbarui")
-                                tokenManager.saveTokens(auth.access_token, auth.refresh_token, auth.id_token)
-                                val retryResponse = RetrofitInstance.apiService.getSetoranSaya(
-                                    token = "Bearer ${auth.access_token}",
-                                    accessToken = auth.access_token
-                                )
-                                if (retryResponse.isSuccessful) {
-                                    retryResponse.body()?.let { setoran ->
-                                        _dashboardState.value = DashboardState.Success(setoran)
-                                    } ?: run {
-                                        Log.e(TAG, "Respons kosong setelah refresh")
-                                        _dashboardState.value = DashboardState.Error("Respons kosong setelah refresh")
-                                    }
-                                } else {
-                                    val retryErrorBody = retryResponse.errorBody()?.string()
-                                    Log.e(TAG, "Gagal setelah refresh, kode: ${retryResponse.code()}, pesan: ${retryResponse.message()}, body: $retryErrorBody")
-                                    _dashboardState.value = DashboardState.Error("Gagal mengambil data setelah refresh: ${retryResponse.message()} (Kode: ${retryResponse.code()})")
-                                }
-                            } ?: run {
-                                Log.e(TAG, "Respons refresh kosong")
-                                _dashboardState.value = DashboardState.Error("Gagal memperbarui token: Respons kosong")
-                            }
-                        } else {
-                            Log.e(TAG, "Gagal refresh token, kode: ${refreshResponse.code()}, pesan: ${refreshResponse.message()}")
-                            _dashboardState.value = DashboardState.Error("Gagal memperbarui token: ${refreshResponse.message()} (Kode: ${refreshResponse.code()})")
-                        }
-                    } else {
-                        Log.e(TAG, "Refresh token tidak ditemukan")
-                        _dashboardState.value = DashboardState.Error("Refresh token tidak ditemukan")
-                    }
-                }
+                refreshTokenAndRetry()
             }
             403 -> {
                 Log.e(TAG, "Akses ditolak: $errorBody")
-                _dashboardState.value = DashboardState.Error("Akses ditolak: Tidak diotorisasi (Kode: 403). Periksa scope/role Keycloak atau nilai apikey.")
+                _dashboardState.value = DashboardState.Error("Akses ditolak: Tidak diotorisasi (Kode: 403)")
             }
             404 -> {
                 Log.e(TAG, "Endpoint tidak ditemukan: $message")
                 _dashboardState.value = DashboardState.Error("Endpoint tidak ditemukan (Kode: 404)")
             }
             else -> {
-                _dashboardState.value = DashboardState.Error("Gagal mengambil data: $message (Kode: $code, Body: $errorBody)")
+                Log.e(TAG, "Gagal mengambil data: $message, kode: $code, body: $errorBody")
+                _dashboardState.value = DashboardState.Error("Gagal mengambil data: $message (Kode: $code)")
             }
+        }
+    }
+
+    private fun refreshTokenAndRetry() {
+        viewModelScope.launch {
+            val refreshToken = tokenManager.getRefreshToken()
+            if (refreshToken == null) {
+                Log.e(TAG, "Refresh token tidak ditemukan")
+                _dashboardState.value = DashboardState.Error("Otentikasi diperlukan")
+                return@launch
+            }
+
+            try {
+                val refreshResponse = RetrofitInstance.kcApiService.refreshToken(
+                    clientId = "setoran-mobile-dev",
+                    clientSecret = "aqJp3xnXKudgC7RMOshEQP7ZoVKWzoSl",
+                    grantType = "refresh_token",
+                    refreshToken = refreshToken
+                )
+
+                if (refreshResponse.isSuccessful) {
+                    refreshResponse.body()?.let { auth ->
+                        Log.d(TAG, "Token berhasil diperbarui")
+                        tokenManager.saveTokens(auth.access_token, auth.refresh_token, auth.id_token)
+                        retryFetchSetoran(auth.access_token)
+                    } ?: run {
+                        Log.e(TAG, "Respons refresh kosong")
+                        _dashboardState.value = DashboardState.Error("Gagal memperbarui token: Respons kosong")
+                    }
+                } else {
+                    Log.e(TAG, "Gagal refresh token, kode: ${refreshResponse.code()}, pesan: ${refreshResponse.message()}")
+                    _dashboardState.value = DashboardState.Error("Gagal memperbarui token (Kode: ${refreshResponse.code()})")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Pengecualian saat refresh token: ${e.message}")
+                _dashboardState.value = DashboardState.Error("Gagal memperbarui token: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun retryFetchSetoran(accessToken: String) {
+        try {
+            val retryResponse = RetrofitInstance.apiService.getSetoranSaya(
+                token = "Bearer $accessToken"
+            )
+            if (retryResponse.isSuccessful) {
+                retryResponse.body()?.let { setoran ->
+                    Log.d(TAG, "Data setoran berhasil diambil setelah refresh: ${setoran.message}")
+                    _dashboardState.value = DashboardState.Success(setoran)
+                } ?: run {
+                    Log.e(TAG, "Respons kosong setelah refresh")
+                    _dashboardState.value = DashboardState.Error("Respons kosong setelah refresh")
+                }
+            } else {
+                Log.e(TAG, "Gagal setelah refresh, kode: ${retryResponse.code()}, pesan: ${retryResponse.message()}")
+                _dashboardState.value = DashboardState.Error("Gagal mengambil data setelah refresh (Kode: ${retryResponse.code()})")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Pengecualian saat mencoba ulang: ${e.message}")
+            _dashboardState.value = DashboardState.Error("Kesalahan jaringan setelah refresh: ${e.message}")
         }
     }
 
@@ -168,7 +167,7 @@ class HomeViewModel(private val tokenManager: Token) : ViewModel() {
                     if (modelClass.isAssignableFrom(HomeViewModel::class.java)) {
                         return HomeViewModel(Token(context)) as T
                     }
-                    throw IllegalArgumentException("Unknown ViewModel class")
+                    throw IllegalArgumentException("Kelas ViewModel tidak dikenal")
                 }
             }
         }
